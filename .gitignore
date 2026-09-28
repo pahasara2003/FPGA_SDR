@@ -1,0 +1,31 @@
+# Rust build artifacts
+spectrum-rx/target/
+
+# Quartus generated output & intermediate files
+output_files/
+db/
+incremental_db/
+simulation/
+greybox_tmp/
+hls/
+*.qws
+*.rpt
+*.smsg
+*.summary
+*.jdi
+*.pin
+*.sof.bak
+*.pof
+*.cdf
+*.qdf
+*.sopcinfo
+
+# Simulation transcript
+transcript
+
+# Backup files
+*.bak
+*.orig
+
+# SignalTap
+*.stp.stp

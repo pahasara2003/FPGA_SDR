@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cyclone IV FFT Spectrum Analyzer</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #090d16;
+    color: #e0e6ed;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px;
+    height: 100vh;
+    overflow: hidden;
+  }
+  header {
+    width: 100%;
+    max-width: 1280px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    padding: 8px 16px;
+    background: #111827;
+    border-radius: 8px;
+    border: 1px solid #1f293d;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .title-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  h1 { font-size: 15px; font-weight: 600; color: #38bdf8; }
+  .stats {
+    display: flex;
+    gap: 14px;
+    font-size: 12px;
+    color: #94a3b8;
+  }
+  .stats span { color: #f8fafc; font-weight: bold; }
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+  }
+  button {
+    background: #1e293b;
+    border: 1px solid #334155;
+    color: #e2e8f0;
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 500;
+  }
+  button:hover { background: #334155; }
+  button.active {
+    background: #0284c7;
+    border-color: #38bdf8;
+    color: #fff;
+  }
+  select {
+    background: #1e293b;
+    border: 1px solid #334155;
+    color: #e2e8f0;
+    padding: 3px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+  }
+  #canvas-container {
+    width: 100%;
+    max-width: 1280px;
+    flex: 1;
+    position: relative;
+    background: #0d131f;
+    border-radius: 8px;
+    border: 1px solid #1f293d;
+    overflow: hidden;
+  }
+  canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  #status-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #ef4444;
+  }
+  #status-indicator.connected { background: #22c55e; }
+  .legend {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    font-size: 11px;
+    color: #cbd5e1;
+  }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .legend-color { width: 12px; height: 3px; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title-group">
+    <div id="status-indicator"></div>
+    <h1>Cyclone IV Real-Time FFT Spectrum (50 MSPS / 1024-pt)</h1>
+  </div>
+
+  <div class="stats">
+    <div>True Peak: <span id="stat-peak">--.--- MHz</span></div>
+    <div>Bin: <span id="stat-bin">--</span></div>
+    <div>Power: <span id="stat-power">-- dBFS</span></div>
+    <div>FPGA Rate: <span id="stat-fps">--</span> fps</div>
+    <div>USB: <span id="stat-mb">-- MB/s</span></div>
+  </div>
+
+  <div class="controls">
+    <div class="legend">
+      <div class="legend-item"><div class="legend-color" style="background:#38bdf8"></div>Live Trace</div>
+      <div class="legend-item"><div class="legend-color" style="background:#f59e0b"></div>Max Hold</div>
+    </div>
+    <button id="btn-scale" class="active">Scale: dBFS</button>
+    <label>Video Avg:
+      <select id="sel-avg">
+        <option value="1.0">Off (Live)</option>
+        <option value="0.25" selected>Low (4x)</option>
+        <option value="0.10">Med (10x)</option>
+        <option value="0.03">High (32x)</option>
+      </select>
+    </label>
+    <button id="btn-maxhold" class="active">Max Hold: ON</button>
+    <button id="btn-reset">Reset Max</button>
+  </div>
+</header>
+
+<div id="canvas-container">
+  <canvas id="spectrum-canvas"></canvas>
+</div>
+
+<script>
+  const canvas = document.getElementById("spectrum-canvas");
+  const ctx = canvas.getContext("2d");
+  const statPeak = document.getElementById("stat-peak");
+  const statBin = document.getElementById("stat-bin");
+  const statPower = document.getElementById("stat-power");
+  const statFps = document.getElementById("stat-fps");
+  const statMb = document.getElementById("stat-mb");
+  const indicator = document.getElementById("status-indicator");
+  const btnScale = document.getElementById("btn-scale");
+  const btnMaxHold = document.getElementById("btn-maxhold");
+  const btnReset = document.getElementById("btn-reset");
+  const selAvg = document.getElementById("sel-avg");
+
+  let scaleMode = "dbfs"; // "dbfs" or "linear"
+  let showMaxHold = true;
+  let ws = null;
+
+  btnScale.addEventListener("click", () => {
+    scaleMode = (scaleMode === "dbfs") ? "linear" : "dbfs";
+    btnScale.textContent = (scaleMode === "dbfs") ? "Scale: dBFS" : "Scale: Linear";
+    btnScale.classList.toggle("active", scaleMode === "dbfs");
+  });
+
+  btnMaxHold.addEventListener("click", () => {
+    showMaxHold = !showMaxHold;
+    btnMaxHold.classList.toggle("active", showMaxHold);
+    btnMaxHold.textContent = showMaxHold ? "Max Hold: ON" : "Max Hold: OFF";
+  });
+
+  btnReset.addEventListener("click", () => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ cmd: "reset_max" }));
+    }
+  });
+
+  selAvg.addEventListener("change", (e) => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ cmd: "set_avg", alpha: parseFloat(e.target.value) }));
+    }
+  });
+
+  function resizeCanvas() {
+    canvas.width = canvas.parentElement.clientWidth * window.devicePixelRatio;
+    canvas.height = canvas.parentElement.clientHeight * window.devicePixelRatio;
+  }
+  window.addEventListener("resize", resizeCanvas);
+  resizeCanvas();
+
+  let liveBins = new Uint16Array(512);
+  let maxBins = new Uint16Array(512);
+  let peakFreq = 0;
+  let peakVal = 0;
+  let peakBin = 0;
+  let fps = 0;
+  let mbS = 0;
+
+  function toDbfs(val) {
+    if (val <= 0) return -60.0;
+    const db = 10.0 * Math.log10(val / 4095.0);
+    return Math.max(-60.0, Math.min(0.0, db));
+  }
+
+  function connect() {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(`${proto}//${window.location.host}`);
+    ws.binaryType = "arraybuffer";
+
+    ws.onopen = () => {
+      indicator.classList.add("connected");
+      ws.send(JSON.stringify({ cmd: "set_avg", alpha: parseFloat(selAvg.value) }));
+    };
+
+    ws.onclose = () => {
+      indicator.classList.remove("connected");
+      setTimeout(connect, 1000);
+    };
+
+    ws.onmessage = (event) => {
+      if (typeof event.data === "string") return;
+      if (event.data.byteLength >= 2062) {
+        const dv = new DataView(event.data);
+        peakFreq = dv.getFloat32(0, true);
+        peakVal = dv.getUint16(4, true);
+        peakBin = dv.getUint16(6, true);
+        fps = dv.getUint16(8, true);
+        mbS = dv.getFloat32(10, true);
+
+        liveBins = new Uint16Array(event.data, 14, 512);
+        maxBins = new Uint16Array(event.data, 14 + 1024, 512);
+
+        statPeak.textContent = `${peakFreq.toFixed(4)} MHz`;
+        statBin.textContent = (peakFreq * 1024.0 / 50.0).toFixed(2);
+
+        if (scaleMode === "dbfs") {
+          const db = (peakVal > 0) ? (10.0 * Math.log10(peakVal / 4095.0)) : -60.0;
+          statPower.textContent = `${db.toFixed(1)} dBFS (${peakVal})`;
+        } else {
+          statPower.textContent = `${peakVal} / 4095`;
+        }
+
+        statFps.textContent = fps.toLocaleString();
+        statMb.textContent = `${mbS.toFixed(1)} MB/s`;
+      }
+    };
+  }
+
+  function draw() {
+    requestAnimationFrame(draw);
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const padLeft = 52 * window.devicePixelRatio;
+    const padBottom = 30 * window.devicePixelRatio;
+    const graphW = w - padLeft - 20 * window.devicePixelRatio;
+    const graphH = h - padBottom - 20 * window.devicePixelRatio;
+
+    // Grid lines & frequency labels (0 to 25 MHz in 2.5 MHz steps)
+    ctx.strokeStyle = "#172033";
+    ctx.lineWidth = 1;
+    ctx.fillStyle = "#64748b";
+    ctx.font = `${11 * window.devicePixelRatio}px monospace`;
+
+    const divisions = 10; // 0, 2.5, 5, ..., 25 MHz
+    for (let k = 0; k <= divisions; k++) {
+      const x = padLeft + (k / divisions) * graphW;
+      ctx.beginPath();
+      ctx.moveTo(x, 15);
+      ctx.lineTo(x, h - padBottom);
+      ctx.stroke();
+      const mhz = (k * 2.5).toFixed(1);
+      ctx.fillText(`${mhz}M`, x - (12 * window.devicePixelRatio), h - 10);
+    }
+
+    // Power Grid Lines (dBFS or Linear)
+    if (scaleMode === "dbfs") {
+      // 0 dB, -10 dB, -20 dB, -30 dB, -40 dB, -50 dB, -60 dB
+      for (let db = 0; db >= -60; db -= 10) {
+        const norm = (db - (-60.0)) / 60.0; // 0.0 at -60 dB, 1.0 at 0 dB
+        const y = (h - padBottom) - norm * graphH;
+        ctx.beginPath();
+        ctx.moveTo(padLeft, y);
+        ctx.lineTo(w - 20, y);
+        ctx.stroke();
+        ctx.fillText(`${db}dB`, 6, y + 4);
+      }
+    } else {
+      // 0, 1000, 2000, 3000, 4000
+      for (let p = 0; p <= 4000; p += 1000) {
+        const y = (h - padBottom) - (p / 4095.0) * graphH;
+        ctx.beginPath();
+        ctx.moveTo(padLeft, y);
+        ctx.lineTo(w - 20, y);
+        ctx.stroke();
+        ctx.fillText(`${p}`, 10, y + 4);
+      }
+    }
+
+    // Helper to calculate Y position based on active scale
+    function getY(val) {
+      if (scaleMode === "dbfs") {
+        const db = toDbfs(val);
+        const norm = (db - (-60.0)) / 60.0;
+        return (h - padBottom) - norm * graphH;
+      } else {
+        return (h - padBottom) - (val / 4095.0) * graphH;
+      }
+    }
+
+    // 1. Draw Max-Hold Trace (Amber/Orange)
+    if (showMaxHold) {
+      ctx.strokeStyle = "#f59e0b";
+      ctx.lineWidth = 1.2 * window.devicePixelRatio;
+      ctx.beginPath();
+      for (let i = 0; i < 512; i++) {
+        const x = padLeft + (i / 511.0) * graphW;
+        const y = getY(maxBins[i]);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    // 2. Draw Live / Averaged Spectrum Trace (Bright Cyan)
+    ctx.strokeStyle = "#38bdf8";
+    ctx.lineWidth = 2 * window.devicePixelRatio;
+    ctx.beginPath();
+    for (let i = 0; i < 512; i++) {
+      const x = padLeft + (i / 511.0) * graphW;
+      const y = getY(liveBins[i]);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // 3. Mark Interpolated Peak
+    if (peakVal > 20) {
+      const interpBin = (peakFreq * 1024.0) / 50.0;
+      const px = padLeft + (interpBin / 511.0) * graphW;
+      const py = getY(peakVal);
+
+      ctx.fillStyle = "#ef4444";
+      ctx.beginPath();
+      ctx.arc(px, py, 4.5 * window.devicePixelRatio, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Peak tooltip text
+      ctx.fillStyle = "#f8fafc";
+      ctx.font = `bold ${11 * window.devicePixelRatio}px monospace`;
+      const pwrStr = (scaleMode === "dbfs") ? `${toDbfs(peakVal).toFixed(1)} dBFS` : `${peakVal}`;
+      const tipText = `${peakFreq.toFixed(4)} MHz (${pwrStr})`;
+      ctx.fillText(tipText, Math.min(px + 8, w - 170), Math.max(py - 8, 30));
+    }
+  }
+
+  connect();
+  draw();
+</script>
+</body>
+</html>

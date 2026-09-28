@@ -1,0 +1,10 @@
+[package]
+name = "sdr-rx"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+libc = "0.2"
