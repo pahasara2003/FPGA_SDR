@@ -1,0 +1,6 @@
+project_open spectrum
+create_timing_netlist
+read_sdc
+update_timing_netlist
+report_datasheet
+project_close
