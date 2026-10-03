@@ -126,15 +126,28 @@ module main (
     // 7. FT232H Synchronous FIFO Streamer (60.0 MHz ft_clk domain)
     //    Streams 16-bit tagged samples as 2 bytes to PC via FT232H
     // =========================================================================
+    // ---- HARDWARE LINK TEST: counter pattern instead of FFT data ----
+    wire [15:0] pat_q;
+    wire        pat_empty;
+    wire        pat_rdreq;
+
+    ft_pattern_src u_pat (
+        .ft_clk  (ft_clk),
+        .rst_n   (sys_rst_n),
+        .rdreq   (pat_rdreq),
+        .q       (pat_q),
+        .rdempty (pat_empty)
+    );
+
     ft232h_streamer u_ft232h_streamer (
         .rst_n        (sys_rst_n),
         .ft_clk       (ft_clk),
         .ft_txe_n     (ft_txe_n),
         .ft_data      (ft_data),
         .ft_wr_n      (ft_wr_n),
-        .fifo_q       (fifo_q),
-        .fifo_rdempty (fifo_rdempty),
-        .fifo_rdreq   (fifo_rdreq)
+        .fifo_q       (pat_q),
+        .fifo_rdempty (pat_empty),
+        .fifo_rdreq   (pat_rdreq)
     );
 
 endmodule

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::ffi::CStr;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
@@ -11,6 +12,14 @@ use std::time::{Duration, Instant};
 use tungstenite::{accept, Message};
 
 const INDEX_HTML: &str = include_str!("web/index.html");
+
+// ---------------------------------------------------------------------------
+// Debug / behaviour switches
+// ---------------------------------------------------------------------------
+// When true, a start-of-frame word is accepted only if its exponent field is
+// -9 (0x37). That matches the fixed square-wave test signal. With a real ADC
+// signal the block-floating-point exponent changes, so set this to false.
+const STRICT_EXP_CHECK: bool = true;
 
 // FTDI C FFI Bindings
 #[repr(C)]
@@ -257,10 +266,27 @@ fn main() {
         let mut stat_1020_1023: u64 = 0;
         let mut stat_under_1020: u64 = 0;
 
+        // Diagnostics: what do the bad frames look like?
+        // short_hist : exact word count of every frame shorter than 1020 words
+        // slip_count : words that were neither tag A nor tag B (byte misalignment)
+        // rejected_sop: SOP-looking words that failed validation
+        // read_errs  : negative return codes from ftdi_read_data (libusb errors)
+        let mut short_hist: BTreeMap<usize, u32> = BTreeMap::new();
+        let mut slip_count: u64 = 0;
+        let mut rejected_sop: u64 = 0;
+        let mut read_errs: u64 = 0;
+        let mut last_read_err: c_int = 0;
+
         const BIN_WIDTH_HZ: f32 = 50_000_000.0 / 1024.0; // 48828.125 Hz
 
         while RUNNING.load(Ordering::Relaxed) {
             let n = unsafe { ftdi_read_data(ftdi, raw_buf.as_mut_ptr(), CHUNK_SIZE as c_int) };
+            if n < 0 {
+                // Negative = libusb/libftdi error (timeout, overflow, pipe...).
+                // Previously ignored silently; count it so it shows up in the log.
+                read_errs += 1;
+                last_read_err = n;
+            }
             if n <= 0 {
                 thread::sleep(Duration::from_millis(1));
                 continue;
@@ -297,6 +323,16 @@ fn main() {
                     stat_1020_1023 = 0;
                     stat_under_1020 = 0;
                 }
+                // Printed every second even when no frame completed, so read errors
+                // and misalignment are visible when the stream is badly broken.
+                println!(
+                    "  [Diag] slips={} rejected_sop={} read_errs={} (last={}) short_lens={:?}",
+                    slip_count, rejected_sop, read_errs, last_read_err, short_hist
+                );
+                short_hist.clear();
+                slip_count = 0;
+                rejected_sop = 0;
+                read_errs = 0;
                 last_log_time = now;
             }
 
@@ -332,6 +368,7 @@ fn main() {
                             stat_1020_1023 += 1;
                         } else {
                             stat_under_1020 += 1;
+                            *short_hist.entry(flen).or_insert(0) += 1;
                         }
                     }
 
@@ -446,7 +483,8 @@ fn main() {
                         true
                     };
 
-                    if (b0 & 0x3F) == 0x37 && next_word_valid {
+                    let exp_ok = !STRICT_EXP_CHECK || (b0 & 0x3F) == 0x37;
+                    if exp_ok && next_word_valid {
                         let val = (((b1 & 0x0F) as u16) << 8) | (b0 as u16);
                         current_frame.clear();
                         current_frame.push(val);
@@ -456,6 +494,7 @@ fn main() {
                         i += 2;
                     } else {
                         // Spurious SOP or unaligned byte boundary slip
+                        rejected_sop += 1;
                         in_frame = false;
                         frame_valid = false;
                         current_frame.clear();
@@ -470,16 +509,17 @@ fn main() {
                     }
                     i += 2;
                 } else {
-                    // 510-byte USB micro-packet boundary slip detected.
-                    // The FTDI strips 2 modem-status bytes per 512-byte USB packet, delivering
-                    // 510 bytes (255 words) per micro-packet. Since 255 is odd, every packet
-                    // boundary shifts the byte phase by 1, causing a slip once every 255 words.
+                    // Neither tag A nor tag B: the byte stream is misaligned here.
+                    // NOTE: this is NOT caused by libftdi stripping its 2 modem-status
+                    // bytes. That leaves 510 data bytes (255 whole words) per USB
+                    // packet, which cannot shift word alignment. A hit here means a
+                    // byte was really lost, duplicated or corrupted between the FPGA
+                    // pins and this program.
                     //
-                    // FIX: Insert a synthetic zero word at the slip position to keep all
-                    // subsequent bins at their correct word indices. Without this, every bin
-                    // after the slip would be shifted by -1, corrupting harmonic peaks.
-                    // The zero_filled_bins bitmask ensures this bin is SKIPPED in the EMA
-                    // update, preserving the last valid average instead of dipping toward 0.
+                    // To keep later bins at their correct indices a zero word is
+                    // inserted, and that bin is skipped in the EMA update. This hides
+                    // the error from the frame-length stats, so count it separately.
+                    slip_count += 1;
                     if in_frame && current_frame.len() < 1024 {
                         let slip_idx = current_frame.len();
                         current_frame.push(0u16);
