@@ -1,6 +1,13 @@
+// =============================================================================
+// control_for_fft -- queue decimated samples and honor the FFT Avalon-ST
+// ready/valid handshake. Incoming samples are buffered while the FFT is busy;
+// each queued sample is windowed once and held with its packet markers until
+// the FFT accepts it.
+// =============================================================================
 module control_for_fft (
     input  wire        clk,
     input  wire        reset_n,
+    input  wire        sample_en,
     input  wire [11:0] insignal,
     output reg         sink_valid,
     input  wire        sink_ready,
@@ -8,72 +15,125 @@ module control_for_fft (
     output reg         sink_sop,
     output reg         sink_eop,
     output reg         inverse,
-    output wire [11:0] outreal,
+    output reg  [11:0] outreal,
     output wire [11:0] outimag,
     output reg  [10:0] fft_pts,
     output wire [9:0]  sample_idx
 );
+    // The CIC supplies one sample every five clocks, while the FFT can accept
+    // one per clock. This queue absorbs short bursts of FFT backpressure.
+    localparam integer QUEUE_DEPTH = 64;
+    reg signed [11:0] sample_mem [0:QUEUE_DEPTH-1];
+    reg [5:0] wr_ptr, rd_ptr;
+    reg [6:0] queued;
+    reg [9:0] write_idx, read_idx;
 
-    reg [9:0] count;
-    assign sample_idx = count;
-    wire [11:0] windowed_signal;
+    // Metadata follows the two registered stages in hann_window_1024.
+    reg pipe_valid_1, pipe_valid_2;
+    reg pipe_sop_1, pipe_sop_2;
+    reg pipe_eop_1, pipe_eop_2;
 
-    // Hann window multiplier instance
+    wire launch = (queued != 0) && !sink_valid &&
+                  !pipe_valid_1 && !pipe_valid_2;
+    wire enqueue = sample_en && ((queued < QUEUE_DEPTH) || launch);
+    wire dequeue = launch;
+
+    // The index follows queued samples rather than the 50 MHz clock.
+    assign sample_idx = write_idx;
+    assign outimag = 12'd0;
+
+    wire signed [11:0] windowed_signal;
     hann_window_1024 u_hann (
         .clk        (clk),
         .reset_n    (reset_n),
-        .sample_idx (count),
-        .data_in    (insignal),
+        .sample_idx (read_idx),
+        .data_in    (sample_mem[rd_ptr]),
         .data_out   (windowed_signal)
     );
 
-    // Latency matching: Delay sink_sop, sink_eop, sink_valid by exactly 2 cycles
-    // to align cycle-for-cycle with the 2-cycle latency of hann_window_1024
-    reg raw_sop_d1;
-    reg raw_eop_d1;
-    reg raw_valid_d1;
-
     initial begin
-        count         = 10'd0;
-        inverse       = 1'b0;
-        sink_valid    = 1'b0;
-        sink_error    = 2'b00;
-        fft_pts       = 11'd1024;
-        raw_sop_d1    = 1'b0;
-        raw_eop_d1    = 1'b0;
-        raw_valid_d1  = 1'b0;
-        sink_sop      = 1'b0;
-        sink_eop      = 1'b0;
+        wr_ptr = 0;
+        rd_ptr = 0;
+        queued = 0;
+        write_idx = 0;
+        read_idx = 0;
+        sink_valid = 0;
+        sink_sop = 0;
+        sink_eop = 0;
+        sink_error = 0;
+        inverse = 0;
+        fft_pts = 11'd1024;
+        outreal = 0;
+        pipe_valid_1 = 0;
+        pipe_valid_2 = 0;
+        pipe_sop_1 = 0;
+        pipe_sop_2 = 0;
+        pipe_eop_1 = 0;
+        pipe_eop_2 = 0;
     end
-
-    assign outreal = windowed_signal;
-    assign outimag = 12'd0;
 
     always @(posedge clk or negedge reset_n) begin
         if (!reset_n) begin
-            count        <= 10'd0;
-            raw_sop_d1   <= 1'b0;
-            sink_sop     <= 1'b0;
-            raw_eop_d1   <= 1'b0;
-            sink_eop     <= 1'b0;
-            raw_valid_d1 <= 1'b0;
-            sink_valid   <= 1'b0;
-            sink_error   <= 2'b00;
-            inverse      <= 1'b0;
+            wr_ptr       <= 0;
+            rd_ptr       <= 0;
+            queued       <= 0;
+            write_idx    <= 0;
+            read_idx     <= 0;
+            sink_valid   <= 0;
+            sink_sop     <= 0;
+            sink_eop     <= 0;
+            sink_error   <= 0;
+            inverse      <= 0;
             fft_pts      <= 11'd1024;
+            outreal      <= 0;
+            pipe_valid_1 <= 0;
+            pipe_valid_2 <= 0;
+            pipe_sop_1   <= 0;
+            pipe_sop_2   <= 0;
+            pipe_eop_1   <= 0;
+            pipe_eop_2   <= 0;
         end else begin
-            count <= count + 1'b1;
+            sink_error <= 2'b00;
+            inverse <= 1'b0;
+            fft_pts <= 11'd1024;
 
-            // Stage 1 (1 cycle after count change)
-            raw_sop_d1   <= (count == 10'd0);
-            raw_eop_d1   <= (count == 10'd1023);
-            raw_valid_d1 <= 1'b1;
+            if (enqueue) begin
+                sample_mem[wr_ptr] <= insignal;
+                wr_ptr <= wr_ptr + 1'b1;
+                write_idx <= write_idx + 1'b1;
+            end
 
-            // Stage 2 (2 cycles after count change, exactly matches windowed_signal)
-            sink_sop     <= raw_sop_d1;
-            sink_eop     <= raw_eop_d1;
-            sink_valid   <= raw_valid_d1;
+            if (dequeue) begin
+                rd_ptr <= rd_ptr + 1'b1;
+                read_idx <= read_idx + 1'b1;
+            end
+
+            case ({enqueue, dequeue})
+                2'b10: queued <= queued + 1'b1;
+                2'b01: queued <= queued - 1'b1;
+                default: queued <= queued;
+            endcase
+
+            // launch is sampled by the Hann ROM and multiplier at this edge.
+            pipe_valid_1 <= launch;
+            pipe_valid_2 <= pipe_valid_1;
+            pipe_sop_1 <= launch && (read_idx == 10'd0);
+            pipe_sop_2 <= pipe_sop_1;
+            pipe_eop_1 <= launch && (read_idx == 10'd1023);
+            pipe_eop_2 <= pipe_eop_1;
+
+            // Capture the completed window result. It remains stable while
+            // sink_ready is low, along with SOP/EOP, until accepted.
+            if (pipe_valid_2) begin
+                outreal <= windowed_signal;
+                sink_valid <= 1'b1;
+                sink_sop <= pipe_sop_2;
+                sink_eop <= pipe_eop_2;
+            end else if (sink_valid && sink_ready) begin
+                sink_valid <= 1'b0;
+                sink_sop <= 1'b0;
+                sink_eop <= 1'b0;
+            end
         end
     end
-
 endmodule

@@ -83,6 +83,18 @@ set_location_assignment PIN_66 -to ft_data[7]
 
 
 
+set_global_assignment -name PARTITION_NETLIST_TYPE SOURCE -section_id Top
+set_global_assignment -name PARTITION_FITTER_PRESERVATION_LEVEL PLACEMENT_AND_ROUTING -section_id Top
+set_global_assignment -name PARTITION_COLOR 16764057 -section_id Top
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ft_data[*]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ft_clk
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ft_txe_n
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ft_wr_n
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to ft_data[*]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to ft_wr_n
+set_instance_assignment -name CURRENT_STRENGTH_NEW 8MA -to ft_data[*]
+set_instance_assignment -name CURRENT_STRENGTH_NEW 8MA -to ft_wr_n
+set_global_assignment -name VERILOG_FILE cic_dec5.v
 set_global_assignment -name VERILOG_FILE mainOriginal.v
 set_global_assignment -name VERILOG_FILE main.v
 set_global_assignment -name BDF_FILE block.bdf
@@ -97,15 +109,4 @@ set_global_assignment -name VERILOG_FILE ft_pattern_src.v
 set_global_assignment -name QIP_FILE fifo.qip
 set_global_assignment -name VERILOG_FILE hann_window_1024.v
 set_global_assignment -name MIF_FILE hann_window_1024.mif
-set_global_assignment -name PARTITION_NETLIST_TYPE SOURCE -section_id Top
-set_global_assignment -name PARTITION_FITTER_PRESERVATION_LEVEL PLACEMENT_AND_ROUTING -section_id Top
-set_global_assignment -name PARTITION_COLOR 16764057 -section_id Top
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ft_data[*]
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ft_clk
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ft_txe_n
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ft_wr_n
-set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to ft_data[*]
-set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to ft_wr_n
-set_instance_assignment -name CURRENT_STRENGTH_NEW 8MA -to ft_data[*]
-set_instance_assignment -name CURRENT_STRENGTH_NEW 8MA -to ft_wr_n
 set_instance_assignment -name PARTITION_HIERARCHY root_partition -to | -section_id Top

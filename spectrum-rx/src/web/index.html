@@ -112,7 +112,7 @@
 <header>
   <div class="title-group">
     <div id="status-indicator"></div>
-    <h1>Cyclone IV Real-Time FFT Spectrum (50 MSPS / 1024-pt)</h1>
+    <h1 id="page-title">Cyclone IV Real-Time FFT Spectrum</h1>
   </div>
 
   <div class="stats">
@@ -147,6 +147,14 @@
 </div>
 
 <script>
+  // Injected by the Rust server from the same FS_HZ constant used for peak
+  // frequency calculations, so graph labels stay in sync with the FPGA rate.
+  const SAMPLE_RATE_HZ = Number("__SAMPLE_RATE_HZ__");
+  const FFT_SIZE = 1024;
+  const MAX_FREQ_MHZ = SAMPLE_RATE_HZ / 2_000_000.0;
+  document.getElementById("page-title").textContent =
+    `Cyclone IV Real-Time FFT Spectrum (${(SAMPLE_RATE_HZ / 1e6).toFixed(1)} MSPS / ${FFT_SIZE}-pt)`;
+
   const canvas = document.getElementById("spectrum-canvas");
   const ctx = canvas.getContext("2d");
   const statPeak = document.getElementById("stat-peak");
@@ -238,7 +246,7 @@
         maxBins = new Uint16Array(event.data, 14 + 1024, 512);
 
         statPeak.textContent = `${peakFreq.toFixed(4)} MHz`;
-        statBin.textContent = (peakFreq * 1024.0 / 50.0).toFixed(2);
+        statBin.textContent = (peakFreq * 1e6 * FFT_SIZE / SAMPLE_RATE_HZ).toFixed(2);
 
         if (scaleMode === "dbfs") {
           const db = (peakVal > 0) ? (10.0 * Math.log10(peakVal / 4095.0)) : -60.0;
@@ -264,20 +272,20 @@
     const graphW = w - padLeft - 20 * window.devicePixelRatio;
     const graphH = h - padBottom - 20 * window.devicePixelRatio;
 
-    // Grid lines & frequency labels (0 to 25 MHz in 2.5 MHz steps)
+    // Grid lines & frequency labels from DC through the current Nyquist rate.
     ctx.strokeStyle = "#172033";
     ctx.lineWidth = 1;
     ctx.fillStyle = "#64748b";
     ctx.font = `${11 * window.devicePixelRatio}px monospace`;
 
-    const divisions = 10; // 0, 2.5, 5, ..., 25 MHz
+    const divisions = 10;
     for (let k = 0; k <= divisions; k++) {
       const x = padLeft + (k / divisions) * graphW;
       ctx.beginPath();
       ctx.moveTo(x, 15);
       ctx.lineTo(x, h - padBottom);
       ctx.stroke();
-      const mhz = (k * 2.5).toFixed(1);
+      const mhz = (k * MAX_FREQ_MHZ / divisions).toFixed(1);
       ctx.fillText(`${mhz}M`, x - (12 * window.devicePixelRatio), h - 10);
     }
 
@@ -344,7 +352,7 @@
 
     // 3. Mark Interpolated Peak
     if (peakVal > 20) {
-      const interpBin = (peakFreq * 1024.0) / 50.0;
+      const interpBin = peakFreq * 1e6 * FFT_SIZE / SAMPLE_RATE_HZ;
       const px = padLeft + (interpBin / 511.0) * graphW;
       const py = getY(peakVal);
 

@@ -13,13 +13,18 @@ use tungstenite::{accept, Message};
 
 const INDEX_HTML: &str = include_str!("web/index.html");
 
+// Effective sample rate of the FPGA FFT input (50 MSPS ADC clock / CIC R=5).
+// Must match cic_dec5.v. Bin width = FS_HZ / 1024 = 9765.625 Hz.
+const FS_HZ: f32 = 10_000_000.0;
+
 // ---------------------------------------------------------------------------
 // Debug / behaviour switches
 // ---------------------------------------------------------------------------
 // When true, a start-of-frame word is accepted only if its exponent field is
-// -9 (0x37). That matches the fixed square-wave test signal. With a real ADC
-// signal the block-floating-point exponent changes, so set this to false.
-const STRICT_EXP_CHECK: bool = true;
+// -9 (0x37). That matched the old 50 MSPS test signal. The decimated 10 MSPS
+// signal has a different amplitude (CIC gain 0.61) and so a different
+// block-floating-point exponent, and real ADC signals vary too, so it is off.
+const STRICT_EXP_CHECK: bool = false;
 
 // FTDI C FFI Bindings
 #[repr(C)]
@@ -190,7 +195,7 @@ fn bind_reuse(addr: &str) -> std::io::Result<TcpListener> {
 
 fn main() {
     println!("================================================================================");
-    println!(" Cyclone IV Real-Time FFT Spectrum Server (50 MSPS / FT232H Sync FIFO)         ");
+    println!(" Cyclone IV Real-Time FFT Spectrum Server (10 MSPS / FT232H Sync FIFO)         ");
     println!(" Features: Sub-Bin Parabolic Interpolation + Video Averaging + Max Hold        ");
     println!("================================================================================");
     println!("Web Client: http://localhost:8080");
@@ -277,7 +282,7 @@ fn main() {
         let mut read_errs: u64 = 0;
         let mut last_read_err: c_int = 0;
 
-        const BIN_WIDTH_HZ: f32 = 50_000_000.0 / 1024.0; // 48828.125 Hz
+        const BIN_WIDTH_HZ: f32 = FS_HZ / 1024.0; // 9765.625 Hz
 
         while RUNNING.load(Ordering::Relaxed) {
             let n = unsafe { ftdi_read_data(ftdi, raw_buf.as_mut_ptr(), CHUNK_SIZE as c_int) };
@@ -627,10 +632,13 @@ fn main() {
                 // Serve HTML Web Client
                 if req_str.starts_with("GET /") || req_str.starts_with("HEAD /") {
                     let is_head = req_str.starts_with("HEAD /");
-                    let body = if is_head { "" } else { INDEX_HTML };
+                    // Keep the browser's axis and peak marker tied to the same
+                    // sample-rate setting used by the Rust FFT calculations.
+                    let html = INDEX_HTML.replace("__SAMPLE_RATE_HZ__", &format!("{:.0}", FS_HZ));
+                    let body = if is_head { "" } else { html.as_str() };
                     let resp = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        INDEX_HTML.len(),
+                        html.len(),
                         body
                     );
                     let _ = stream.write_all(resp.as_bytes());
